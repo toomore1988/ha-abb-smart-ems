@@ -2,8 +2,6 @@
 
 > **Kein offizielles ABB-Produkt.** Community-Integration ohne Gewährleistung. ABB bietet zur Energy API keinen Kundensupport.
 
-> **Status: v0.1.0, noch nicht an einer echten Anlage erprobt.** Der Code ist gegen die Swagger-Spezifikation der ABB-Cloud (v1.88.11) gebaut und durch automatisierte Tests mit nachgebildeten API-Antworten abgedeckt. Was vor dem ersten produktiven Einsatz an einer echten Anlage zu prüfen ist, steht unter [Offene Punkte](#offene-punkte).
-
 Bindet das ABB Smart EMS mit dem Gateway **Energy Edge EX.1** in Home Assistant ein — wahlweise über die **Cloud-API** (voller Funktionsumfang inkl. Steuerung) oder direkt über die **lokale REST-API** des Gateways (nur Sensoren, kein Internet nötig).
 
 - **Cloud-API**: [myBuildings Energy API](https://api.energy.mybuildings.abb.com/abb/documentation) – Sensoren und Steuerung
@@ -47,7 +45,7 @@ Ordner `custom_components/abb_smart_ems` in `<config>/custom_components/` kopier
 ### Gateway-ID finden
 
 1. Im [myBuildings-Portal](https://mybuildings.abb.com) anmelden
-2. Registerkarte **«Mein Zuhause»** → Abo-Bereich **«Dein Smart Energy …»**
+2. Registerkarte **«Mein Zuhause»** → Bereich **«Dein Smart Energy …»**
 3. Unter **«Hardware»** beim Energy Edge EX.1 auf **«Verwalten»** klicken
 4. In der Geräteübersicht steht die Gateway-ID im Feld **«ID»** (z. B. `002A…`), darunter die **IP-Adresse** für den lokalen Modus
 
@@ -55,7 +53,7 @@ Ordner `custom_components/abb_smart_ems` in `<config>/custom_components/` kopier
 
 Quelle: Wissensartikel [Smart EMS API](https://abbag.zohodesk.eu/portal/de/kb/articles/api).
 
-1. Im Smart-EMS-Webportal oben rechts das **Profil** öffnen
+1. Im [Smart-EMS-Webportal](https://energy.mybuildings.abb.com) einloggen und oben rechts das **Profil** öffnen
 2. **«Cloud-API-Schlüssel»** wählen
 3. Mit **«+»** einen neuen Schlüssel anlegen und die Parameter festlegen:
    - **«Erneuerung erlauben»**: am besten **nicht** aktivieren (siehe [Schlüssel-Erneuerung](#schlüssel-erneuerung-rotation))
@@ -65,8 +63,6 @@ Quelle: Wissensartikel [Smart EMS API](https://abbag.zohodesk.eu/portal/de/kb/ar
 > Fehlt der Menüpunkt «Cloud-API-Schlüssel», den Support kontaktieren — die Funktion wird auf Anfrage freigeschaltet.
 
 ### Lokale Schnittstelle aktivieren (nur für den lokalen Modus)
-
-Quelle: Kurzanleitung „ABB-free@home® / ABB Smart EMS" (2CKA000073B0357), Kapitel 2.
 
 1. Geräteübersicht des Energy Edge EX.1 im myBuildings-Portal öffnen (wie unter [Gateway-ID finden](#gateway-id-finden))
 2. **«Aktiviere die Schnittstelle (http API) …»** einschalten
@@ -395,16 +391,6 @@ Wurde der Schlüssel mit eingeschränkten Berechtigungen erstellt, kann er lesen
 
 ---
 
-## Offene Punkte
-
-Vor dem ersten produktiven Einsatz an einer echten Anlage zu prüfen:
-
-1. **Einstellungsfelder der Geräte.** Die Swagger-Spezifikation beschreibt das Objekt `data` in `/v3/users/{abbId}/devices` nur als „gerätespezifisches Konfigurationsobjekt", ohne Feldliste. Die Integration erwartet dort dieselben Feldnamen wie in den Schreib-Endpunkten (`batteryMode`, `chargingMode`, `heatPumpChargingMode`, …). Stimmt das nicht, bleiben Selects und Parameter «Unbekannt» — Sensoren sind davon nicht betroffen.
-2. **Statuscode bei abgelehntem Schlüssel.** Die Integration wertet 400, 401 und 403 beim Token-Tausch als „Schlüssel ungültig" und startet den Reauth-Dialog. Welchen Code die Cloud tatsächlich liefert, ist nicht dokumentiert.
-3. **Typ `car`.** Fahrzeuge bekommen wie Wallboxen ein Lademodus-Select. Ob die Cloud das für jedes Fahrzeug annimmt, ist an einer Anlage mit angebundenem Fahrzeug zu prüfen.
-
----
-
 ## Deinstallation
 
 1. Einstellungen → Geräte & Dienste → **ABB Smart EMS** → `⋮` → **Löschen**
@@ -426,14 +412,6 @@ ruff check custom_components/abb_smart_ems/
 
 ## Herkunft und Lizenz
 
-Diese Integration ist ein Fork von [ha-solarmanager](https://github.com/Soardiac/ha-solarmanager) von @Soardiac (Stand v1.12.0, Commit `257f2aa`), angepasst an die ABB-Cloud. ABB Smart EMS basiert auf der Plattform von Solar Manager; die Schnittstellen sind eng verwandt, aber nicht identisch.
-
-Wesentliche Änderungen gegenüber der Vorlage:
-
-- Cloud-Basis-URL `api.energy.mybuildings.abb.com`, Gateway-ID `abbId` statt `smId`
-- Anmeldung nur per Cloud-API-Schlüssel; E-Mail/Passwort-Login samt Migrationshinweis entfernt
-- Geräte und Einstellungen aus `/v3/users/{abbId}/devices` statt `/v1/info/sensors/{smId}` (den Endpunkt bietet die ABB-Cloud nicht)
-- Unterstützung für Schlüssel-Erneuerung (Rotation), Wartezeit nach fehlgeschlagenem Token-Tausch
-- Gerätetyp `switches`, Preislimit in der HA-Währung, Kind-Geräte ohne Herstellerangabe
+Diese Integration ist ein Fork von [ha-solarmanager](https://github.com/Soardiac/ha-solarmanager) von @Soardiac (Stand v1.12.0, Commit `257f2aa`), angepasst an die ABB-Cloud.
 
 Lizenz: MIT, siehe [LICENSE.txt](LICENSE.txt). Der Copyright-Vermerk der Vorlage bleibt erhalten.
