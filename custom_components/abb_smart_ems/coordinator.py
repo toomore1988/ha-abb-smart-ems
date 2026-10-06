@@ -1,0 +1,735 @@
+# coordinator.py
+from __future__ import annotations
+
+import logging
+import time
+from datetime import timedelta
+from typing import Any, NoReturn
+
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.storage import Store
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
+
+from .api_client import (
+    SmartEmsApiError,
+    SmartEmsAuthError,
+    SmartEmsCloud,
+    SmartEmsLocal,
+    SmartEmsRateLimit,
+)
+from .const import (
+    CLOUD_BASE,
+    CONF_ABB_ID,
+    CONF_API_KEY,
+    CONF_HOST,
+    CONF_MODE,
+    CONF_SCAN_INTERVAL,
+    CONF_SCHEME,
+    DEFAULT_SCAN,
+    DOMAIN,
+    MODE_LOCAL,
+)
+
+_LOGGER = logging.getLogger(__name__)
+
+# Geräte-Metadaten-Cache: /v3/users/{abbId}/devices ist ein separater API-Call
+# pro Refresh — nicht bei jedem 10s-Poll neu laden (Rate-Limit: 500 Abfragen pro
+# Stunde und Endpunkt). Nach PUTs wird gezielt via async_refresh_device_meta()
+# aktualisiert.
+META_TTL = 60  # Sekunden
+
+# Tages-Statistiken (Cloud) höchstens alle 5 Minuten laden
+STATS_TTL = 300  # Sekunden
+
+# Persistenz der Tageszähler (überleben Neustart/Reload)
+STORAGE_VERSION = 1
+STORAGE_SAVE_DELAY = 60  # Sekunden
+
+# Geräte-Tageszähler: der Stream liefert unter iWhTotal/eWhTotal kumulative
+# Zählerstände, keine Tageswerte. Daraus werden Tageswerte abgeleitet, die um
+# Mitternacht wieder bei 0 starten (Quellfeld → abgeleitetes Feld).
+DEVICE_DAILY_KEYS = {
+    "iWhTotal": "iWhToday",
+    "eWhTotal": "eWhToday",
+}
+
+# Plausibilitätsgrenze für den Zuwachs eines Geräte-Zählers zwischen zwei Polls.
+# Meldet der Stream einmalig 0 (Gerät getrennt, Gateway-Hickup) und danach wieder
+# den echten Gesamtstand, sähe das sonst wie ein Verbrauch in Höhe des kompletten
+# Lebenszählers aus — HA schreibt so einen Sprung als Tagesverbrauch in die
+# Langzeitstatistik. Mehr als DEVICE_MAX_POWER_W über die verstrichene Zeit kann
+# kein Hausgerät umsetzen, solche Sprünge werden daher verworfen.
+DEVICE_MAX_POWER_W = 50_000.0
+# Obergrenze der für die Plausibilitätsprüfung angerechneten Lücke: Nach einem
+# Neustart oder Ausfall wird der real angefallene Verbrauch nachgezählt (der
+# Zählerstand weiß ihn ja), aber nicht unbegrenzt — sonst wäre die Grenze nach
+# einer langen Lücke wirkungslos.
+DEVICE_MAX_GAP_S = 6 * 3600
+
+# Alle laut Swagger (BatteryModeAndSettingsSchema) gültigen Felder des
+# PUT /v2/control/battery/{sensorId}. Das Schema hat kein required-Feld, aber
+# Defaults auf fast allen Feldern; fehlende Keys werden serverseitig mit dem
+# Default überschrieben. Daher immer das vollständige Settings-Objekt senden
+# (read-modify-write), damit kein nicht-geändertes Feld zurückgesetzt wird.
+BATTERY_PUT_FIELDS = frozenset({
+    "batteryMode",
+    "batteryManualMode",
+    "maxChargePower",
+    "maxDischargePower",
+    "upperSocLimit",
+    "lowerSocLimit",
+    "powerCharge",
+    "powerDischarge",
+    "dischargeSocLimit",
+    "morningSocLimit",
+    "chargingSocLimit",
+    "peakShavingSocDischargeLimit",
+    "peakShavingSocMaxLimit",
+    "peakShavingMaxGridPower",
+    "peakShavingRechargePower",
+    "tariffPriceLimit",
+    "tariffPriceMode",
+    "tariffAbsoluteChargeLimit",
+    "tariffAbsoluteDischargeLimit",
+    "tariffPercentageChargeLimit",
+    "tariffPercentageDischargeLimit",
+    "tariffOffsetChargeLimit",
+    "tariffOffsetDischargeLimit",
+    "tariffDischargeSocLimit",
+    "tariffPriceLimitSocMax",
+    "tariffPriceLimitSocMin",
+    "tariffPriceLimitForecast",
+    "standardStandaloneAllowed",
+    "standardLowerSocLimit",
+    "standardUpperSocLimit",
+})
+
+# Aria-Einstellungen (batteryMode 6) aus demselben Schema. Sie haben dort keine
+# Defaults und fehlen bei Anlagen ohne Aria ggf. ganz — deshalb nur mitsenden,
+# wenn die Cloud dafür tatsächlich einen Wert liefert (nie null zurückschreiben).
+BATTERY_PUT_OPTIONAL_FIELDS = frozenset({
+    "mpcLowerSocLimit",
+    "mpcUpperSocLimit",
+    "mpcChargingFromGrid",
+})
+
+
+def daily_store(hass: HomeAssistant, entry_id: str) -> Store[dict[str, Any]]:
+    """Store für die persistierten Tageszähler eines Config-Entries."""
+    return Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry_id}_daily")
+
+
+def compute_surplus_w(data: dict[str, Any] | None) -> float | None:
+    """PV-Überschuss (W) = PV-Leistung - Hausverbrauch - Batterie-Leistung.
+
+    None, wenn pW oder cW (noch) nicht vorliegen — fehlende Daten sollen nicht
+    stillschweigend als 0 gewertet werden. batW ist selbst schon optional
+    abgeleitet (siehe _async_update_data) und wird bei Fehlen als 0 behandelt.
+    """
+    d = data or {}
+    p_w = d.get("pW")
+    c_w = d.get("cW")
+    if p_w is None or c_w is None:
+        return None
+    return p_w - c_w - (d.get("batW") or 0.0)
+
+
+def resolve_coordinator_for_device(hass: HomeAssistant, device_id: str) -> "SmartEmsCoordinator":
+    """Zur Device-ID eines Trigger/Condition-Targets den geladenen Coordinator auflösen.
+
+    Genutzt von trigger.py/condition.py: Nutzer wählt in der Automation-UI ein
+    Smart-EMS-Gerät (Site oder Kind-Gerät), wir brauchen den Coordinator des
+    zugehörigen, geladenen Config-Entries.
+    """
+    device = dr.async_get(hass).async_get(device_id)
+    if device is None:
+        raise HomeAssistantError(f"ABB Smart EMS: unknown device_id {device_id}")
+
+    # Ab HA 2026.8 gibt es DeviceEntry.config_entry_id (Singular); das alte
+    # config_entries-Set ist dort nur noch ein deprecated Shim (Removal 2027.8).
+    # Mindestversion dieser Integration ist 2025.8, wo es config_entry_id noch
+    # nicht gibt -- deshalb zur Laufzeit erkennen statt fest zu binden.
+    single_entry_id = getattr(device, "config_entry_id", None)
+    entry_ids = (single_entry_id,) if single_entry_id else device.config_entries
+    for entry_id in entry_ids:
+        entry = hass.config_entries.async_get_entry(entry_id)
+        if entry is None or entry.domain != DOMAIN:
+            continue
+        coord = getattr(entry, "runtime_data", None)
+        if isinstance(coord, SmartEmsCoordinator):
+            return coord
+    raise HomeAssistantError(f"ABB Smart EMS: device {device_id} has no loaded config entry")
+
+
+class SmartEmsCoordinator(DataUpdateCoordinator[dict[str, Any]]):
+    """Coordinator, der den v3-Stream pollt, Daten normalisiert und Geräte-Metadaten cached (aus /v3/users/{abbId}/devices)."""
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry):
+        super().__init__(
+            hass,
+            _LOGGER,
+            config_entry=entry,
+            name=DOMAIN,
+            update_interval=timedelta(
+                seconds=entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN)
+            ),
+        )
+        self.entry = entry
+        self.is_local: bool = entry.data.get(CONF_MODE) == MODE_LOCAL
+        self.client: SmartEmsCloud | SmartEmsLocal | None = None
+
+        # Registry-ID des Site-Geräts; von async_setup_entry gesetzt, bevor die
+        # Plattformen geladen werden. child_device_info() verknüpft die Kind-Geräte
+        # darüber mit der Site (via_device_id, ab HA 2026.8).
+        self.site_device_id: str | None = None
+
+        # Cache für Geräte-Metadaten: exakt per _id
+        self.device_meta: dict[str, dict] = {}
+        self._meta_last: float = 0.0
+
+        # Tages-Statistiken (production, consumption, …) — nur Cloud
+        self._stats_data: dict[str, Any] = {}
+        self._stats_last: float = 0.0
+        self._stats_date: str = ""
+
+        # Tages-Netzenergie (nur Cloud): Riemann-Integration von iW/eW.
+        # Ersetzt die fehlerhafte REST-Ableitung consumption - selfConsumption
+        # bei Batterie-Nachtentladung (Upstream ha-solarmanager, Issue #25). Lokaler Modus ist nicht betroffen,
+        # dort übernehmen bereits _local_grid_import_wh/_local_grid_export_wh
+        # dieselbe Aufgabe.
+        self._cloud_grid_import_wh: float = 0.0
+        self._cloud_grid_export_wh: float = 0.0
+        self._cloud_grid_day: str = ""
+        self._cloud_grid_t: float = 0.0
+
+        # Tages-Energie (Lokal): Riemann-Integration von pW/cW/iW/eW
+        self._local_production_wh: float = 0.0
+        self._local_consumption_wh: float = 0.0
+        self._local_grid_import_wh: float = 0.0
+        self._local_grid_export_wh: float = 0.0
+        self._local_day: str = ""
+        self._local_t: float = 0.0
+
+        # Tages-Batterieenergie (beide Modi): Summierung der bcWh/bdWh-Intervallwerte
+        self._bat_charge_wh: float = 0.0
+        self._bat_discharge_wh: float = 0.0
+        self._bat_day: str = ""
+        self._bat_last_t: Any = None  # Stream-Timestamp des zuletzt summierten Punkts
+
+        # Geräte-Tageszähler je "{dev_id}:{feld}": zuletzt gesehener Zählerstand
+        # ("total") und die daraus seit Mitternacht summierte Energie ("today")
+        self._dev_daily: dict[str, dict[str, float | None]] = {}
+        self._dev_day: str = ""
+        self._dev_t: float = 0.0
+
+        # Persistenz der Tageszähler (Neustart/Reload mitten am Tag)
+        self._store = daily_store(hass, entry.entry_id)
+        self._store_loaded = False
+
+    @property
+    def site_id(self) -> str:
+        if self.is_local:
+            return self.entry.data[CONF_HOST]
+        return self.entry.data.get(CONF_ABB_ID, "unknown")
+
+    @callback
+    def _persist_rotated_api_key(self, new_key: str) -> None:
+        """Rotierten Cloud-API-Key sofort im Config-Entry speichern.
+
+        Ist am Key "Erneuerung erlauben" aktiv, gibt die Cloud bei jedem
+        Token-Tausch einen neuen Key aus und entwertet den alten. Ohne dieses
+        Speichern wäre der Entry nach dem nächsten HA-Neustart ausgesperrt.
+        """
+        self.hass.config_entries.async_update_entry(
+            self.entry, data={**self.entry.data, CONF_API_KEY: new_key}
+        )
+
+    async def _async_setup(self) -> None:
+        if self.client:
+            return
+        session = async_get_clientsession(self.hass)
+        if self.is_local:
+            self.client = SmartEmsLocal(
+                self.entry.data[CONF_HOST],
+                session,
+                scheme=self.entry.data.get(CONF_SCHEME, "http"),
+                api_key=self.entry.data.get(CONF_API_KEY),
+            )
+        else:
+            self.client = SmartEmsCloud(
+                session,
+                base=CLOUD_BASE,
+                abb_id=self.entry.data[CONF_ABB_ID],
+                api_key=self.entry.data.get(CONF_API_KEY) or "",
+                on_key_rotated=self._persist_rotated_api_key,
+            )
+            # _async_setup wird vom Coordinator-Framework außerhalb von
+            # _async_update_data aufgerufen — dessen Exception-Mapping greift
+            # hier nicht. Ohne Mapping landet ein Auth-Fehler beim Login im
+            # generischen Framework-Handler und löst nie den Reauth-Flow aus.
+            try:
+                await self.client.login()
+            except (SmartEmsAuthError, SmartEmsRateLimit, SmartEmsApiError) as err:
+                self._raise_mapped_client_error(err)
+        await self._async_restore_daily()
+        await self._load_device_meta()
+
+    # -------------------- Persistenz Tageszähler --------------------
+
+    async def _async_restore_daily(self) -> None:
+        """Gespeicherte Tageszähler laden, wenn sie vom heutigen Tag stammen."""
+        if self._store_loaded:
+            return
+        self._store_loaded = True
+        stored = await self._store.async_load() or {}
+        today = dt_util.now().strftime("%Y-%m-%d")
+        if stored.get("local_day") == today:
+            self._local_day = today
+            self._local_production_wh = float(stored.get("local_production_wh", 0.0))
+            self._local_consumption_wh = float(stored.get("local_consumption_wh", 0.0))
+            self._local_grid_import_wh = float(stored.get("local_grid_import_wh", 0.0))
+            self._local_grid_export_wh = float(stored.get("local_grid_export_wh", 0.0))
+            # _local_t bleibt 0 → die Lücke seit dem Neustart wird nicht integriert
+        if stored.get("cloud_grid_day") == today:
+            self._cloud_grid_day = today
+            self._cloud_grid_import_wh = float(stored.get("cloud_grid_import_wh", 0.0))
+            self._cloud_grid_export_wh = float(stored.get("cloud_grid_export_wh", 0.0))
+            # _cloud_grid_t bleibt 0 → die Lücke seit dem Neustart wird nicht integriert
+        if stored.get("bat_day") == today:
+            self._bat_day = today
+            self._bat_charge_wh = float(stored.get("bat_charge_wh", 0.0))
+            self._bat_discharge_wh = float(stored.get("bat_discharge_wh", 0.0))
+            self._bat_last_t = stored.get("bat_last_t")
+        if stored.get("dev_day") == today:
+            self._dev_day = today
+            daily: dict[str, dict[str, float | None]] = {}
+            for key, value in (stored.get("dev_daily") or {}).items():
+                if not isinstance(value, dict):
+                    continue
+                try:
+                    total = value.get("total")
+                    daily[str(key)] = {
+                        "total": None if total is None else float(total),
+                        "today": float(value.get("today", 0.0)),
+                    }
+                except (TypeError, ValueError):
+                    continue
+            self._dev_daily = daily
+            try:
+                self._dev_t = float(stored.get("dev_t") or 0.0)
+            except (TypeError, ValueError):
+                self._dev_t = 0.0
+
+    def _daily_state(self) -> dict[str, Any]:
+        return {
+            "local_day": self._local_day,
+            "local_production_wh": self._local_production_wh,
+            "local_consumption_wh": self._local_consumption_wh,
+            "local_grid_import_wh": self._local_grid_import_wh,
+            "local_grid_export_wh": self._local_grid_export_wh,
+            "cloud_grid_day": self._cloud_grid_day,
+            "cloud_grid_import_wh": self._cloud_grid_import_wh,
+            "cloud_grid_export_wh": self._cloud_grid_export_wh,
+            "bat_day": self._bat_day,
+            "bat_charge_wh": self._bat_charge_wh,
+            "bat_discharge_wh": self._bat_discharge_wh,
+            "bat_last_t": self._bat_last_t,
+            "dev_day": self._dev_day,
+            "dev_daily": self._dev_daily,
+            "dev_t": self._dev_t,
+        }
+
+    # -------------------- Geräte-Tageszähler --------------------
+
+    def _apply_device_daily(
+        self, devices: list[dict[str, Any]], today: str, now_t: float
+    ) -> None:
+        """Tageswerte aus den kumulativen Geräte-Zählern ableiten.
+
+        iWhTotal/eWhTotal laufen über Tage hinweg weiter. Summiert werden daher
+        die Zuwächse zwischen zwei Polls; um Mitternacht startet die Summe wieder
+        bei 0. Nicht plausible Sprünge zählen nicht mit, es wird nur der
+        Referenzstand nachgezogen:
+
+        - Zuwachs negativ → Zählerreset im Gerät oder ein Ausreißer nach unten
+        - Zuwachs größer als DEVICE_MAX_POWER_W über die verstrichene Zeit →
+          Rücksprung auf den Gesamtstand nach einem Ausreißer (sonst landet der
+          komplette Lebenszähler als Tagesverbrauch in der Statistik)
+        """
+        if today != self._dev_day:
+            self._dev_day = today
+            for state in self._dev_daily.values():
+                state["today"] = 0.0
+        interval_s = (
+            self.update_interval.total_seconds()
+            if self.update_interval
+            else DEFAULT_SCAN
+        )
+        # Gegen die real verstrichene Zeit prüfen, damit ein verzögerter Poll oder
+        # eine Lücke durch Neustart/Ausfall den echten Zuwachs nicht verwirft
+        elapsed = now_t - self._dev_t if self._dev_t > 0 else interval_s
+        elapsed = min(max(elapsed, 3 * interval_s, 30.0), DEVICE_MAX_GAP_S)
+        max_delta = DEVICE_MAX_POWER_W * elapsed / 3600
+        self._dev_t = now_t
+        for dev in devices:
+            if not isinstance(dev, dict):
+                continue
+            dev_id = str(dev.get("_id") or "")
+            if not dev_id:
+                continue
+            for src, dst in DEVICE_DAILY_KEYS.items():
+                if src not in dev:
+                    continue
+                try:
+                    total = float(dev[src])
+                except (TypeError, ValueError):
+                    continue
+                state = self._dev_daily.setdefault(
+                    f"{dev_id}:{src}", {"total": None, "today": 0.0}
+                )
+                last = state["total"]
+                if last is not None:
+                    delta = total - last
+                    if 0.0 <= delta <= max_delta:
+                        state["today"] = (state["today"] or 0.0) + delta
+                    else:
+                        _LOGGER.debug(
+                            "Ignoring implausible %s step for device %s: %s -> %s",
+                            src,
+                            dev_id,
+                            last,
+                            total,
+                        )
+                state["total"] = total
+                dev[dst] = round(state["today"] or 0.0, 3)
+
+    # -------------------- Geräte-Metadaten --------------------
+
+    async def _load_device_meta(self) -> None:
+        """Geräte-Metadaten aus /v3/users/{abbId}/devices (Cloud) oder /v2/devices (Lokal) laden."""
+        if not self.client:
+            return
+        # Auch bei Fehlern erst nach META_TTL erneut versuchen — sonst feuert
+        # bei API-Störung jeder Poll einen zusätzlichen fehlschlagenden Request.
+        self._meta_last = time.time()
+        try:
+            raw = await self.client.list_devices()
+            items = raw.get("items", raw) if isinstance(raw, dict) else raw
+            meta: dict[str, dict] = {}
+            for d in items or []:
+                if not isinstance(d, dict):
+                    continue
+                dev_id = str(d.get("_id") or "")
+                if not dev_id:
+                    continue
+                # Cloud (/v3/users/{abbId}/devices): "tag" ist der vom Nutzer
+                # vergebene Name als String, "deviceKey" das Gerätemodell,
+                # "carName" der Fahrzeugname. Tolerant auch gegen tag als
+                # Objekt {"name": …}. Lokal liefert list_devices() bereits "name".
+                tag = d.get("tag")
+                tag_name = tag.get("name") if isinstance(tag, dict) else tag
+                model = d.get("deviceKey") or None
+                typ = d.get("type") or d.get("device_type") or None
+                # Name-Prio: expliziter "name" → Tag → Fahrzeugname → Modell → Typ
+                friendly = (
+                    d.get("name") or tag_name or d.get("carName") or model or typ or None
+                )
+                meta[dev_id] = {
+                    "name": friendly,
+                    "type": typ,
+                    "model": model,
+                    "raw": d,
+                }
+            self.device_meta = meta
+            _LOGGER.debug("Loaded %d device metadata entries", len(self.device_meta))
+        except Exception as e:
+            _LOGGER.debug("Could not fetch device metadata: %s", e)
+
+    def get_device_name(self, dev_id: str) -> str | None:
+        """Freundlichen Namen für ein Gerät liefern (exaktes Mapping via _id)."""
+        m = self.device_meta.get(str(dev_id))
+        return (m or {}).get("name")
+
+    def get_device_model(self, dev_id: str) -> str | None:
+        """Gerätemodell (deviceKey der Cloud) liefern, falls bekannt."""
+        m = self.device_meta.get(str(dev_id))
+        return (m or {}).get("model")
+
+    async def async_put_battery_merged(self, dev_id: str, changes: dict[str, Any]) -> None:
+        """Batterie-Settings als vollständiges Objekt schreiben (read-modify-write).
+
+        Liest die aktuellen Settings aus den gecachten Metadaten, überlagert die
+        geänderten Felder und sendet das komplette Objekt. So setzt das Backend
+        keine nicht-gesendeten Felder auf ihre Defaults zurück (siehe
+        BATTERY_PUT_FIELDS).
+        """
+        raw_data = (self.device_meta.get(str(dev_id)) or {}).get("raw", {}).get("data", {}) or {}
+        payload = {k: raw_data[k] for k in BATTERY_PUT_FIELDS if k in raw_data}
+        payload.update({
+            k: raw_data[k]
+            for k in BATTERY_PUT_OPTIONAL_FIELDS
+            if raw_data.get(k) is not None
+        })
+        if not payload:
+            # Ohne gecachte Settings würde das Backend alle nicht gesendeten
+            # Felder auf Defaults zurücksetzen — dann lieber gar nicht schreiben.
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="battery_settings_not_loaded",
+            )
+        payload.update(changes)
+        await self.client.put_battery_settings(dev_id, payload)
+        await self.async_refresh_device_meta()
+
+    async def async_refresh_device_meta(self) -> None:
+        """Meta sofort neu laden (z. B. nach einem PUT), dann Update anstoßen."""
+        await self._load_device_meta()
+        await self.async_request_refresh()
+
+    async def _load_gateway_stats(self) -> None:
+        """Tages-Statistiken via GET /v1/statistics/gateways/{abbId} laden (alle 5 min)."""
+        if not self.client:
+            return
+        # Auch bei Fehlern erst nach STATS_TTL erneut versuchen (Rate-Limit-Schonung)
+        self._stats_last = time.time()
+        try:
+            now = dt_util.now()
+            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            from_dt = dt_util.as_utc(today_start).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            to_dt = dt_util.as_utc(now).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            data = await self.client.get_gateway_statistics(from_dt, to_dt, "high")
+            self._stats_data = data
+            _LOGGER.debug("Gateway stats loaded: %s", data)
+        except Exception as e:
+            _LOGGER.debug("Could not fetch gateway statistics: %s", e)
+
+    def _raise_mapped_client_error(self, err: Exception) -> NoReturn:
+        """Client-Exception auf ConfigEntryAuthFailed/UpdateFailed mappen.
+
+        Einzige Stelle für dieses Mapping — wird sowohl beim Setup-Login
+        (_async_setup) als auch im Update-Pfad (_async_update_data) gebraucht.
+        """
+        if isinstance(err, SmartEmsAuthError):
+            raise ConfigEntryAuthFailed(str(err)) from err
+        if self.last_update_success:
+            _LOGGER.warning("ABB Smart EMS not available: %s", err)
+        raise UpdateFailed(str(err)) from err
+
+    async def _async_update_data(self) -> dict[str, Any]:
+        try:
+            await self._async_setup()
+            assert self.client is not None
+
+            if self.is_local:
+                assert isinstance(self.client, SmartEmsLocal)
+                raw = await self.client.get_point()
+            else:
+                assert isinstance(self.client, SmartEmsCloud)
+                raw = await self.client.stream_user_v3()
+
+            def _num(x):
+                try:
+                    return float(x) if x is not None else None
+                except Exception:
+                    return None
+
+            def _to_int(x) -> int:
+                try:
+                    return int(x)
+                except Exception:
+                    return 0
+
+            data: dict[str, Any] = {
+                "t": raw.get("t"),
+                "iv": _to_int(raw.get("iv", 0)),
+                # Leistungen (W)
+                "pW": _num(raw.get("pW")),   # PV
+                "cW": _num(raw.get("cW")),   # Verbrauch
+                "bcW": _num(raw.get("bcW")), # Batterie Laden +
+                "bdW": _num(raw.get("bdW")), # Batterie Entladen +
+                "iW": _num(raw.get("iW")),   # Netz Import +
+                "eW": _num(raw.get("eW")),   # Netz Export +
+                # Energie-Intervallwerte (Wh) aus dem Stream
+                "pWh": _num(raw.get("pWh")),
+                "cWh": _num(raw.get("cWh")),
+                "iWh": _num(raw.get("iWh")),
+                "eWh": _num(raw.get("eWh")),
+                "bcWh": _num(raw.get("bcWh")),
+                "bdWh": _num(raw.get("bdWh")),
+                # Batterie
+                "soc": _num(raw.get("soc")),
+                # Geräte-Liste (aus dem Stream, IDs = _id → matchen exakt devices._id)
+                "devices": raw.get("devices") or [],
+            }
+
+            # Abgeleitet: Batterie-Leistung (Laden +, Entladen -)
+            if data["bcW"] is not None or data["bdW"] is not None:
+                bc = data["bcW"] or 0.0
+                bd = data["bdW"] or 0.0
+                data["batW"] = bc - bd
+            else:
+                data["batW"] = None
+
+            # Abgeleitet: Netzleistung (Import +, Export -)
+            if data["iW"] is not None or data["eW"] is not None:
+                # Cloud: iW/eW direkt vom API
+                im = data["iW"] or 0.0
+                ex = data["eW"] or 0.0
+                data["gridW"] = im - ex
+            elif self.is_local:
+                # Lokal: iW/eW nicht in API → Energiebilanz
+                grid = round(
+                    (data["cW"] or 0.0)
+                    + (data["bcW"] or 0.0)
+                    - (data["pW"] or 0.0)
+                    - (data["bdW"] or 0.0),
+                    1,
+                )
+                data["gridW"] = grid
+                data["iW"] = round(max(0.0, grid), 1)
+                data["eW"] = round(max(0.0, -grid), 1)
+            else:
+                data["gridW"] = None
+
+            # Meta nur nach Ablauf des TTL auffrischen (schont das API-Limit)
+            if time.time() - self._meta_last > META_TTL:
+                await self._load_device_meta()
+
+            today = dt_util.now().strftime("%Y-%m-%d")
+
+            # Geräte-Tageszähler aus den kumulativen Zählern ableiten
+            self._apply_device_daily(data["devices"], today, time.time())
+
+            # Tages-Statistiken: Cloud via API, Lokal via Integration
+            if not self.is_local:
+                # Tages-Netzenergie: iW/eW über die Zeit integrieren → Wh-Tageszähler
+                # (Upstream-Issue #25). Muss vor dem await _load_gateway_stats() unten laufen,
+                # sonst fließt dessen Netzwerk-Latenz ins Zeitintervall der
+                # Integration ein.
+                now_t = time.time()
+                interval_s = (
+                    self.update_interval.total_seconds()
+                    if self.update_interval
+                    else DEFAULT_SCAN
+                )
+                max_gap_s = max(3 * interval_s, 30.0)
+                if today != self._cloud_grid_day:
+                    self._cloud_grid_import_wh = 0.0
+                    self._cloud_grid_export_wh = 0.0
+                    self._cloud_grid_day = today
+                elif self._cloud_grid_t > 0:
+                    dt_s = now_t - self._cloud_grid_t
+                    if 0 < dt_s <= max_gap_s:
+                        self._cloud_grid_import_wh += (data.get("iW") or 0.0) * dt_s / 3600
+                        self._cloud_grid_export_wh += (data.get("eW") or 0.0) * dt_s / 3600
+                    else:
+                        _LOGGER.debug(
+                            "Skipping cloud grid energy integration over %.0f s gap", dt_s
+                        )
+                self._cloud_grid_t = now_t
+
+                if self._stats_date != today:
+                    # Tageswechsel: Vortageswerte nicht weiterzeigen, bis der
+                    # erste Fetch des neuen Tages gelungen ist
+                    self._stats_data = {}
+                    self._stats_date = today
+                    self._stats_last = 0.0
+                if time.time() - self._stats_last > STATS_TTL:
+                    await self._load_gateway_stats()
+                data["stat_production"] = self._stats_data.get("production")
+                data["stat_consumption"] = self._stats_data.get("consumption")
+                data["stat_self_consumption"] = self._stats_data.get("selfConsumption")
+                _consumption = self._stats_data.get("consumption") or 0
+                if _consumption < 10:  # Tagesübergang: Prozentwerte noch nicht aussagekräftig
+                    data["stat_self_consumption_rate"] = None
+                    data["stat_autarchy_degree"] = None
+                else:
+                    data["stat_self_consumption_rate"] = self._stats_data.get("selfConsumptionRate")
+                    data["stat_autarchy_degree"] = self._stats_data.get("autarchyDegree")
+                data["stat_grid_import"] = self._cloud_grid_import_wh
+                data["stat_grid_export"] = self._cloud_grid_export_wh
+            else:
+                # Lokal: pW/cW/iW/eW (W) über die Zeit integrieren → Wh-Tageszähler
+                now_t = time.time()
+                interval_s = (
+                    self.update_interval.total_seconds()
+                    if self.update_interval
+                    else DEFAULT_SCAN
+                )
+                # Nach Ausfall/Suspend keine riesige Lücke mit dem aktuellen
+                # Leistungswert integrieren (würde einen Energie-Spike erzeugen)
+                max_gap_s = max(3 * interval_s, 30.0)
+                if today != self._local_day:
+                    self._local_production_wh = 0.0
+                    self._local_consumption_wh = 0.0
+                    self._local_grid_import_wh = 0.0
+                    self._local_grid_export_wh = 0.0
+                    self._local_day = today
+                elif self._local_t > 0:
+                    dt_s = now_t - self._local_t
+                    if 0 < dt_s <= max_gap_s:
+                        self._local_production_wh += (data.get("pW") or 0.0) * dt_s / 3600
+                        self._local_consumption_wh += (data.get("cW") or 0.0) * dt_s / 3600
+                        self._local_grid_import_wh += (data.get("iW") or 0.0) * dt_s / 3600
+                        self._local_grid_export_wh += (data.get("eW") or 0.0) * dt_s / 3600
+                    else:
+                        _LOGGER.debug(
+                            "Skipping local energy integration over %.0f s gap", dt_s
+                        )
+                self._local_t = now_t
+                data["stat_production"] = self._local_production_wh
+                data["stat_consumption"] = self._local_consumption_wh
+                _self_consumption = max(0.0, self._local_production_wh - self._local_grid_export_wh)
+                data["stat_self_consumption"] = _self_consumption
+                data["stat_grid_import"] = self._local_grid_import_wh
+                data["stat_grid_export"] = self._local_grid_export_wh
+                if self._local_consumption_wh < 10:  # Tagesübergang: Prozentwerte noch nicht aussagekräftig
+                    data["stat_self_consumption_rate"] = None
+                    data["stat_autarchy_degree"] = None
+                else:
+                    data["stat_self_consumption_rate"] = (
+                        min(100.0, 100.0 * _self_consumption / self._local_production_wh)
+                        if self._local_production_wh > 0
+                        else 0.0
+                    )
+                    data["stat_autarchy_degree"] = min(
+                        100.0, 100.0 * _self_consumption / self._local_consumption_wh
+                    )
+
+            # Tages-Batterieenergie (beide Modi): bcWh/bdWh-Intervalle aufsummieren.
+            # Nur neue Stream-Punkte zählen — bei unverändertem Timestamp t würde
+            # dasselbe Intervall sonst mehrfach summiert (Poll < Stream-Intervall).
+            # Punkte ohne Timestamp werden übersprungen: ohne t ist kein Dedup
+            # möglich und jeder Poll würde dasselbe Intervall erneut summieren.
+            if today != self._bat_day:
+                self._bat_charge_wh = 0.0
+                self._bat_discharge_wh = 0.0
+                self._bat_day = today
+                self._bat_last_t = None
+            point_t = data.get("t")
+            if point_t is not None and point_t != self._bat_last_t:
+                self._bat_charge_wh += (data.get("bcWh") or 0.0)
+                self._bat_discharge_wh += (data.get("bdWh") or 0.0)
+                self._bat_last_t = point_t
+            data["stat_bat_charge"] = self._bat_charge_wh
+            data["stat_bat_discharge"] = self._bat_discharge_wh
+
+            # Tageszähler verzögert persistieren (überleben Neustart/Reload)
+            self._store.async_delay_save(self._daily_state, STORAGE_SAVE_DELAY)
+
+            return data
+
+        except (SmartEmsAuthError, SmartEmsRateLimit, SmartEmsApiError) as err:
+            self._raise_mapped_client_error(err)
+        except HomeAssistantError:
+            raise
+        except Exception as err:
+            if self.last_update_success:
+                _LOGGER.warning("Unexpected error updating ABB Smart EMS: %s", err)
+            _LOGGER.debug("Traceback:", exc_info=True)
+            raise UpdateFailed(f"Unexpected: {err}") from err

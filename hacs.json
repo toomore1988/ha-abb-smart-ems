@@ -1,0 +1,6 @@
+{
+  "name": "ABB Smart EMS",
+  "render_readme": true,
+  "country": ["DE", "AT", "CH", "NL", "BE"],
+  "homeassistant": "2025.8.0"
+}

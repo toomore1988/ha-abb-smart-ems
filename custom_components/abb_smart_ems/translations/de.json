@@ -1,0 +1,372 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Verbindungsmodus wählen",
+        "data": {
+          "mode": "Modus"
+        },
+        "data_description": {
+          "mode": "Cloud: voller Funktionsumfang inkl. Steuerung, benötigt einen Cloud-API-Schlüssel. Lokal: nur Sensoren, direkt vom Gateway Energy Edge EX.1, kein Internet nötig."
+        }
+      },
+      "cloud": {
+        "title": "ABB Smart EMS Cloud einrichten",
+        "description": "Der Zugriff auf die ABB-Cloud läuft ausschließlich über einen **Cloud-API-Schlüssel** — eine Anmeldung mit E-Mail und Passwort gibt es nicht.\n\nSo erstellst du den Schlüssel: [Smart EMS API]({kb_url})",
+        "data": {
+          "abb_id": "Gateway-ID (abbId)",
+          "api_key": "Cloud-API-Schlüssel"
+        },
+        "data_description": {
+          "abb_id": "Die ID deines Energy Edge EX.1. Im myBuildings-Portal unter «Mein Zuhause» → Hardware → Energy Edge EX.1 → «Verwalten» steht sie im Feld «ID».",
+          "api_key": "Im Smart-EMS-Webportal oben rechts das Profil öffnen → «Cloud-API-Schlüssel» → mit «+» einen neuen Schlüssel anlegen. «Erneuerung erlauben» am besten NICHT aktivieren. Fehlt der Menüpunkt, den Support kontaktieren — die Funktion wird auf Anfrage freigeschaltet."
+        }
+      },
+      "local": {
+        "title": "Lokale Verbindung einrichten",
+        "description": "Die lokale API muss zuerst am Gateway aktiviert werden (myBuildings-Portal → «Mein Zuhause» → Hardware → Energy Edge EX.1 → «Verwalten» → Schnittstelle aktivieren).",
+        "data": {
+          "host": "IP-Adresse / Hostname",
+          "scheme": "Protokoll",
+          "api_key": "Lokaler API-Schlüssel (optional)"
+        },
+        "data_description": {
+          "host": "IP-Adresse oder Hostname des Gateways Energy Edge EX.1 (z. B. 192.168.1.100). Die IP-Adresse steht in der Geräteübersicht im myBuildings-Portal.",
+          "scheme": "HTTP für unverschlüsselt, HTTPS für verschlüsselt (selbst-signiertes Zertifikat wird akzeptiert).",
+          "api_key": "Optionaler Schlüssel der lokalen Schnittstelle («API-Schlüssel generieren» in der Geräteübersicht im myBuildings-Portal). Das ist nicht der Cloud-API-Schlüssel. Leer lassen, wenn kein Schlüssel eingerichtet ist."
+        }
+      },
+      "reauth_confirm": {
+        "title": "ABB Smart EMS erneut authentifizieren",
+        "description": "Der Cloud-API-Schlüssel für Gateway **{abb_id}** wurde abgelehnt (ungültig, abgelaufen oder gelöscht). Trage einen gültigen Schlüssel ein.\n\nSo erstellst du den Schlüssel: [Smart EMS API]({kb_url})",
+        "data": {
+          "api_key": "Cloud-API-Schlüssel"
+        }
+      },
+      "reauth_local": {
+        "title": "Lokalen API-Schlüssel aktualisieren",
+        "description": "Die lokale API des Gateways **{host}** hat die Anfrage abgelehnt. Gib den aktuellen API-Schlüssel ein. Leer lassen, wenn das Gateway keinen Schlüssel mehr verlangt.",
+        "data": {
+          "api_key": "Lokaler API-Schlüssel"
+        }
+      },
+      "reconfigure": {
+        "title": "ABB Smart EMS neu konfigurieren",
+        "data": {
+          "mode": "Modus"
+        },
+        "data_description": {
+          "mode": "Aktuellen Modus behalten, um Zugangsdaten zu ändern, oder den anderen Modus wählen, um zu wechseln. Sensoren und Geräte behalten ihre bestehenden Entity-IDs."
+        }
+      },
+      "reconfigure_cloud": {
+        "title": "ABB Smart EMS Cloud neu konfigurieren",
+        "description": "Schlüssel-Feld leer lassen, um den gespeicherten Cloud-API-Schlüssel zu behalten.",
+        "data": {
+          "abb_id": "Gateway-ID (abbId)",
+          "api_key": "Cloud-API-Schlüssel"
+        }
+      },
+      "reconfigure_local": {
+        "title": "Lokale Verbindung neu konfigurieren",
+        "description": "API-Schlüssel leer lassen, um den gespeicherten Schlüssel zu behalten.",
+        "data": {
+          "host": "IP-Adresse / Hostname",
+          "scheme": "Protokoll",
+          "api_key": "Lokaler API-Schlüssel (optional)"
+        }
+      },
+      "switch_to_cloud": {
+        "title": "Auf Cloud-Modus wechseln",
+        "description": "Trage die Gateway-ID und einen **Cloud-API-Schlüssel** ein.\n\nSo erstellst du den Schlüssel: [Smart EMS API]({kb_url})",
+        "data": {
+          "abb_id": "Gateway-ID (abbId)",
+          "api_key": "Cloud-API-Schlüssel"
+        },
+        "data_description": {
+          "abb_id": "Die ID deines Energy Edge EX.1. Im myBuildings-Portal unter «Mein Zuhause» → Hardware → Energy Edge EX.1 → «Verwalten» steht sie im Feld «ID».",
+          "api_key": "Im Smart-EMS-Webportal oben rechts das Profil öffnen → «Cloud-API-Schlüssel» → mit «+» einen neuen Schlüssel anlegen. «Erneuerung erlauben» am besten NICHT aktivieren."
+        }
+      },
+      "switch_to_local": {
+        "title": "Auf lokalen Modus wechseln",
+        "description": "Achtung: Betriebsmodi, Parameter und Ladeziel-Termine (Select/Number/Datetime) gibt es nur im Cloud-Modus. Nach dem Wechsel sind sie nicht mehr verfügbar — Skripte, Automationen und Dashboards, die diese Steuerelemente verwenden, funktionieren dann nicht mehr. Beim Zurückwechseln zu Cloud werden dieselben Entity-IDs wiederverwendet.",
+        "data": {
+          "host": "IP-Adresse / Hostname",
+          "scheme": "Protokoll",
+          "api_key": "Lokaler API-Schlüssel (optional)"
+        },
+        "data_description": {
+          "host": "IP-Adresse oder Hostname des Gateways Energy Edge EX.1 (z. B. 192.168.1.100).",
+          "scheme": "HTTP für unverschlüsselt, HTTPS für verschlüsselt (selbst-signiertes Zertifikat wird akzeptiert).",
+          "api_key": "Optionaler Schlüssel der lokalen Schnittstelle. Das ist nicht der Cloud-API-Schlüssel. Leer lassen, wenn kein Schlüssel eingerichtet ist."
+        }
+      }
+    },
+    "error": {
+      "auth": "Der API-Schlüssel wurde abgelehnt. Bitte Schlüssel und Gateway-ID prüfen und erneut versuchen.",
+      "cannot_connect": "Verbindung fehlgeschlagen. Ist die API bzw. das Gateway erreichbar?",
+      "rate_limit": "Rate-Limit der API erreicht (der Token-Tausch erlaubt 50 Abfragen pro Stunde). Bitte später erneut versuchen.",
+      "credentials_required": "Bitte Gateway-ID und Cloud-API-Schlüssel angeben.",
+      "unknown": "Unbekannter Fehler. Bitte Logs prüfen."
+    },
+    "abort": {
+      "already_configured": "Dieses ABB Smart EMS ist bereits eingerichtet.",
+      "reauth_successful": "Erneute Authentifizierung erfolgreich. Die Integration wird neu geladen.",
+      "reconfigure_successful": "Neukonfiguration erfolgreich. Die Integration wird neu geladen."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Optionen",
+        "data": {
+          "scan_interval": "Abfrageintervall (Sekunden)"
+        },
+        "data_description": {
+          "scan_interval": "Wie oft die API abgefragt wird. Empfohlen: 10 Sekunden. Die Cloud erlaubt 500 Abfragen pro Stunde und Endpunkt."
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "battery_settings_not_loaded": {
+      "message": "Batterie-Einstellungen noch nicht geladen — Schreibvorgang abgebrochen, um ein Zurücksetzen anderer Felder auf Defaults zu verhindern. Bitte in ein paar Sekunden erneut versuchen."
+    }
+  },
+  "triggers": {
+    "surplus_available": {
+      "name": "PV-Überschuss verfügbar",
+      "description": "Löst aus, sobald der PV-Überschuss (PV-Leistung minus Verbrauch minus Batterie-Leistung) für eine festgelegte Dauer über einem Schwellwert bleibt.",
+      "fields": {
+        "threshold": {
+          "name": "Überschuss-Schwellwert"
+        },
+        "for": {
+          "name": "Für mindestens"
+        }
+      }
+    }
+  },
+  "conditions": {
+    "is_surplus_present": {
+      "name": "PV-Überschuss vorhanden",
+      "description": "Prüft, ob der PV-Überschuss durchgehend seit einer festgelegten Dauer über einem Schwellwert liegt.",
+      "fields": {
+        "threshold": {
+          "name": "Überschuss-Schwellwert"
+        },
+        "for": {
+          "name": "Für mindestens"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "pv_power": {
+        "name": "PV-Leistung"
+      },
+      "consumption_power": {
+        "name": "Hausverbrauch"
+      },
+      "battery_power": {
+        "name": "Batterie-Leistung (+Laden/-Entladen)"
+      },
+      "grid_import_power": {
+        "name": "Netz Import"
+      },
+      "grid_export_power": {
+        "name": "Netz Export"
+      },
+      "grid_power": {
+        "name": "Netzleistung (+Bezug/-Einspeisung)"
+      },
+      "pv_energy_interval": {
+        "name": "PV-Energie (Intervall)"
+      },
+      "consumption_energy_interval": {
+        "name": "Verbrauch (Intervall)"
+      },
+      "grid_import_energy_interval": {
+        "name": "Netzbezug (Intervall)"
+      },
+      "grid_export_energy_interval": {
+        "name": "Netzeinspeisung (Intervall)"
+      },
+      "battery_charge_energy_interval": {
+        "name": "Batterie geladen (Intervall)"
+      },
+      "battery_discharge_energy_interval": {
+        "name": "Batterie entladen (Intervall)"
+      },
+      "battery_soc": {
+        "name": "Batterie-SOC"
+      },
+      "devices_overview": {
+        "name": "Geräte (Stream-Übersicht)"
+      },
+      "production_today": {
+        "name": "PV Tageserzeugung"
+      },
+      "consumption_today": {
+        "name": "Verbrauch heute"
+      },
+      "self_consumption_today": {
+        "name": "Eigenverbrauch heute"
+      },
+      "self_consumption_rate": {
+        "name": "Eigenverbrauchsquote"
+      },
+      "autarchy_degree": {
+        "name": "Autarkiegrad"
+      },
+      "grid_import_today": {
+        "name": "Netzbezug heute"
+      },
+      "grid_export_today": {
+        "name": "Netzeinspeisung heute"
+      },
+      "battery_charge_today": {
+        "name": "Batterie geladen heute"
+      },
+      "battery_discharge_today": {
+        "name": "Batterie entladen heute"
+      },
+      "power": {
+        "name": "Leistung"
+      },
+      "soc": {
+        "name": "SOC"
+      },
+      "temperature": {
+        "name": "Temperatur"
+      },
+      "active_state": {
+        "name": "Aktivstatus"
+      },
+      "daily_consumption": {
+        "name": "Tagesverbrauch"
+      },
+      "daily_feed_in": {
+        "name": "Tageseinspeisung"
+      },
+      "operation_state": {
+        "name": "Betriebszustand"
+      },
+      "switch_state": {
+        "name": "Schaltzustand"
+      },
+      "heating_adjustment": {
+        "name": "Heizungskorrektur"
+      },
+      "remaining_range": {
+        "name": "Restreichweite"
+      },
+      "surplus_power": {
+        "name": "PV-Überschuss"
+      }
+    },
+    "binary_sensor": {
+      "signal": {
+        "name": "Verbindung"
+      }
+    },
+    "select": {
+      "battery_mode": {
+        "name": "Batterie Modus"
+      },
+      "wallbox_mode": {
+        "name": "Wallbox Modus"
+      },
+      "v2x_mode": {
+        "name": "V2X Modus"
+      },
+      "heat_pump_mode": {
+        "name": "Wärmepumpe Modus"
+      },
+      "water_heater_mode": {
+        "name": "Warmwasser Modus"
+      },
+      "smart_plug_mode": {
+        "name": "Smart Plug Modus"
+      },
+      "switch_mode": {
+        "name": "Schalter Modus"
+      },
+      "battery_manual_mode": {
+        "name": "Manuell Richtung"
+      }
+    },
+    "number": {
+      "eco_discharge_soc_limit": {
+        "name": "Eco Entlade-Limit"
+      },
+      "eco_morning_soc_limit": {
+        "name": "Eco Morgen-Limit"
+      },
+      "eco_charging_soc_limit": {
+        "name": "Eco Lade-Limit"
+      },
+      "active_power_limit": {
+        "name": "Einspeisebegrenzung"
+      },
+      "constant_current": {
+        "name": "Konstantstrom"
+      },
+      "charging_target_soc": {
+        "name": "Ladeziel SOC"
+      },
+      "charging_target_soc_max": {
+        "name": "Ladeziel SOC Maximum"
+      },
+      "min_charge_quantity_target": {
+        "name": "Ladeziel kWh Menge"
+      },
+      "min_charge_quantity_target_max": {
+        "name": "Ladeziel kWh Maximum"
+      },
+      "power_setting_percent": {
+        "name": "Leistung"
+      },
+      "upper_soc_limit": {
+        "name": "SOC-Obergrenze"
+      },
+      "lower_soc_limit": {
+        "name": "SOC-Untergrenze"
+      },
+      "peak_shaving_max_grid_power": {
+        "name": "Peak-Shaving Netzlimit"
+      },
+      "peak_shaving_recharge_power": {
+        "name": "Peak-Shaving Nachladeleistung"
+      },
+      "peak_shaving_soc_discharge_limit": {
+        "name": "Peak-Shaving SOC-Entladegrenze"
+      },
+      "peak_shaving_soc_max_limit": {
+        "name": "Peak-Shaving SOC-Maximum"
+      },
+      "max_charge_power": {
+        "name": "Manuell Ladeleistung"
+      },
+      "max_discharge_power": {
+        "name": "Manuell Entladeleistung"
+      },
+      "tariff_price_limit": {
+        "name": "Tarif Preislimit"
+      },
+      "tariff_price_limit_soc_max": {
+        "name": "Tarif SOC-Maximum"
+      }
+    },
+    "datetime": {
+      "charging_target_soc_datetime": {
+        "name": "Ladeziel SOC Termin"
+      },
+      "min_charge_quantity_datetime": {
+        "name": "Ladeziel kWh Termin"
+      }
+    }
+  }
+}

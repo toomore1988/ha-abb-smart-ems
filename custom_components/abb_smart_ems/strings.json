@@ -1,0 +1,372 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Choose connection mode",
+        "data": {
+          "mode": "Mode"
+        },
+        "data_description": {
+          "mode": "Cloud: full functionality including control, requires a Cloud API key. Local: sensors only, read directly from the Energy Edge EX.1 gateway, no internet required."
+        }
+      },
+      "cloud": {
+        "title": "Set up ABB Smart EMS Cloud",
+        "description": "The ABB cloud is accessed with a **Cloud API key** only — there is no sign-in with email and password.\n\nHow to create a key: [Smart EMS API]({kb_url})",
+        "data": {
+          "abb_id": "Gateway ID (abbId)",
+          "api_key": "Cloud API key"
+        },
+        "data_description": {
+          "abb_id": "The ID of your Energy Edge EX.1. In the myBuildings portal, open the gateway's device overview (Hardware → Manage); it is shown there as ID.",
+          "api_key": "In the Smart EMS web portal, open your profile (top right) and create a new key under Cloud API keys. Preferably do NOT enable key renewal. If the menu entry is missing, contact support — the feature is enabled on request."
+        }
+      },
+      "local": {
+        "title": "Set up local connection",
+        "description": "The local API must be enabled on the gateway first (myBuildings portal → device overview of the Energy Edge EX.1 → enable the interface).",
+        "data": {
+          "host": "IP address / hostname",
+          "scheme": "Protocol",
+          "api_key": "Local API key (optional)"
+        },
+        "data_description": {
+          "host": "IP address or hostname of the Energy Edge EX.1 gateway (e.g. 192.168.1.100). The IP address is shown in the device overview of the myBuildings portal.",
+          "scheme": "HTTP for unencrypted, HTTPS for encrypted (self-signed certificates are accepted).",
+          "api_key": "Optional key of the local interface, generated in the device overview of the myBuildings portal. This is not the Cloud API key. Leave empty if no key is configured."
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate ABB Smart EMS",
+        "description": "The Cloud API key for gateway **{abb_id}** was rejected (invalid, expired or deleted). Enter a valid key.\n\nHow to create a key: [Smart EMS API]({kb_url})",
+        "data": {
+          "api_key": "Cloud API key"
+        }
+      },
+      "reauth_local": {
+        "title": "Update local API key",
+        "description": "The local API of gateway **{host}** rejected the request. Enter the current API key. Leave empty if the gateway no longer requires a key.",
+        "data": {
+          "api_key": "Local API key"
+        }
+      },
+      "reconfigure": {
+        "title": "Reconfigure ABB Smart EMS",
+        "data": {
+          "mode": "Mode"
+        },
+        "data_description": {
+          "mode": "Keep the current mode to update credentials, or pick the other mode to switch. Sensors and devices keep their existing entity IDs."
+        }
+      },
+      "reconfigure_cloud": {
+        "title": "Reconfigure ABB Smart EMS Cloud",
+        "description": "Leave the key field empty to keep the stored Cloud API key.",
+        "data": {
+          "abb_id": "Gateway ID (abbId)",
+          "api_key": "Cloud API key"
+        }
+      },
+      "reconfigure_local": {
+        "title": "Reconfigure local connection",
+        "description": "Leave the API key empty to keep the stored key.",
+        "data": {
+          "host": "IP address / hostname",
+          "scheme": "Protocol",
+          "api_key": "Local API key (optional)"
+        }
+      },
+      "switch_to_cloud": {
+        "title": "Switch to Cloud mode",
+        "description": "Enter the gateway ID and a **Cloud API key**.\n\nHow to create a key: [Smart EMS API]({kb_url})",
+        "data": {
+          "abb_id": "Gateway ID (abbId)",
+          "api_key": "Cloud API key"
+        },
+        "data_description": {
+          "abb_id": "The ID of your Energy Edge EX.1. In the myBuildings portal, open the gateway's device overview (Hardware → Manage); it is shown there as ID.",
+          "api_key": "In the Smart EMS web portal, open your profile (top right) and create a new key under Cloud API keys. Preferably do NOT enable key renewal."
+        }
+      },
+      "switch_to_local": {
+        "title": "Switch to local mode",
+        "description": "Warning: operating modes, parameters and charging-target datetimes (select/number/datetime) only exist in Cloud mode. After switching they become unavailable — scripts, automations and dashboards using these controls will stop working. Switching back to Cloud reuses the same entity IDs.",
+        "data": {
+          "host": "IP address / hostname",
+          "scheme": "Protocol",
+          "api_key": "Local API key (optional)"
+        },
+        "data_description": {
+          "host": "IP address or hostname of the Energy Edge EX.1 gateway (e.g. 192.168.1.100).",
+          "scheme": "HTTP for unencrypted, HTTPS for encrypted (self-signed certificates are accepted).",
+          "api_key": "Optional key of the local interface. This is not the Cloud API key. Leave empty if no key is configured."
+        }
+      }
+    },
+    "error": {
+      "auth": "The API key was rejected. Check the key and the gateway ID and try again.",
+      "cannot_connect": "Connection failed. Is the API or the gateway reachable?",
+      "rate_limit": "API rate limit reached (the token exchange allows 50 requests per hour). Please try again later.",
+      "credentials_required": "Enter both the gateway ID and a Cloud API key.",
+      "unknown": "Unknown error. Please check the logs."
+    },
+    "abort": {
+      "already_configured": "This ABB Smart EMS system is already configured.",
+      "reauth_successful": "Re-authentication successful. The integration will be reloaded.",
+      "reconfigure_successful": "Reconfiguration successful. The integration will be reloaded."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Options",
+        "data": {
+          "scan_interval": "Polling interval (seconds)"
+        },
+        "data_description": {
+          "scan_interval": "How often the API is polled. Recommended: 10 seconds. The cloud allows 500 requests per hour and endpoint."
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "battery_settings_not_loaded": {
+      "message": "Battery settings are not loaded yet — write aborted to avoid resetting other fields to their defaults. Please try again in a few seconds."
+    }
+  },
+  "triggers": {
+    "surplus_available": {
+      "name": "PV surplus available",
+      "description": "Triggers once PV surplus (PV power minus consumption minus battery power) stays above a threshold for a set duration.",
+      "fields": {
+        "threshold": {
+          "name": "Surplus threshold"
+        },
+        "for": {
+          "name": "For at least"
+        }
+      }
+    }
+  },
+  "conditions": {
+    "is_surplus_present": {
+      "name": "PV surplus present",
+      "description": "Tests whether PV surplus has been continuously above a threshold for a set duration.",
+      "fields": {
+        "threshold": {
+          "name": "Surplus threshold"
+        },
+        "for": {
+          "name": "For at least"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "pv_power": {
+        "name": "PV power"
+      },
+      "consumption_power": {
+        "name": "House consumption"
+      },
+      "battery_power": {
+        "name": "Battery power (+charge/-discharge)"
+      },
+      "grid_import_power": {
+        "name": "Grid import"
+      },
+      "grid_export_power": {
+        "name": "Grid export"
+      },
+      "grid_power": {
+        "name": "Grid power (+import/-export)"
+      },
+      "pv_energy_interval": {
+        "name": "PV energy (interval)"
+      },
+      "consumption_energy_interval": {
+        "name": "Consumption (interval)"
+      },
+      "grid_import_energy_interval": {
+        "name": "Grid import (interval)"
+      },
+      "grid_export_energy_interval": {
+        "name": "Grid export (interval)"
+      },
+      "battery_charge_energy_interval": {
+        "name": "Battery charged (interval)"
+      },
+      "battery_discharge_energy_interval": {
+        "name": "Battery discharged (interval)"
+      },
+      "battery_soc": {
+        "name": "Battery SOC"
+      },
+      "devices_overview": {
+        "name": "Devices (stream overview)"
+      },
+      "production_today": {
+        "name": "PV production today"
+      },
+      "consumption_today": {
+        "name": "Consumption today"
+      },
+      "self_consumption_today": {
+        "name": "Self-consumption today"
+      },
+      "self_consumption_rate": {
+        "name": "Self-consumption rate"
+      },
+      "autarchy_degree": {
+        "name": "Autarky degree"
+      },
+      "grid_import_today": {
+        "name": "Grid import today"
+      },
+      "grid_export_today": {
+        "name": "Grid export today"
+      },
+      "battery_charge_today": {
+        "name": "Battery charged today"
+      },
+      "battery_discharge_today": {
+        "name": "Battery discharged today"
+      },
+      "power": {
+        "name": "Power"
+      },
+      "soc": {
+        "name": "SOC"
+      },
+      "temperature": {
+        "name": "Temperature"
+      },
+      "active_state": {
+        "name": "Active state"
+      },
+      "daily_consumption": {
+        "name": "Consumption today"
+      },
+      "daily_feed_in": {
+        "name": "Feed-in today"
+      },
+      "operation_state": {
+        "name": "Operation state"
+      },
+      "switch_state": {
+        "name": "Switch state"
+      },
+      "heating_adjustment": {
+        "name": "Heating adjustment"
+      },
+      "remaining_range": {
+        "name": "Remaining range"
+      },
+      "surplus_power": {
+        "name": "PV surplus"
+      }
+    },
+    "binary_sensor": {
+      "signal": {
+        "name": "Connection"
+      }
+    },
+    "select": {
+      "battery_mode": {
+        "name": "Battery mode"
+      },
+      "wallbox_mode": {
+        "name": "Wallbox mode"
+      },
+      "v2x_mode": {
+        "name": "V2X mode"
+      },
+      "heat_pump_mode": {
+        "name": "Heat pump mode"
+      },
+      "water_heater_mode": {
+        "name": "Water heater mode"
+      },
+      "smart_plug_mode": {
+        "name": "Smart plug mode"
+      },
+      "switch_mode": {
+        "name": "Switch mode"
+      },
+      "battery_manual_mode": {
+        "name": "Manual direction"
+      }
+    },
+    "number": {
+      "eco_discharge_soc_limit": {
+        "name": "Eco discharge limit"
+      },
+      "eco_morning_soc_limit": {
+        "name": "Eco morning limit"
+      },
+      "eco_charging_soc_limit": {
+        "name": "Eco charge limit"
+      },
+      "active_power_limit": {
+        "name": "Feed-in limit"
+      },
+      "constant_current": {
+        "name": "Constant current"
+      },
+      "charging_target_soc": {
+        "name": "Charging target SOC"
+      },
+      "charging_target_soc_max": {
+        "name": "Charging target SOC maximum"
+      },
+      "min_charge_quantity_target": {
+        "name": "Charging target amount (kWh)"
+      },
+      "min_charge_quantity_target_max": {
+        "name": "Charging target maximum (kWh)"
+      },
+      "power_setting_percent": {
+        "name": "Power"
+      },
+      "upper_soc_limit": {
+        "name": "SOC upper limit"
+      },
+      "lower_soc_limit": {
+        "name": "SOC lower limit"
+      },
+      "peak_shaving_max_grid_power": {
+        "name": "Peak shaving grid limit"
+      },
+      "peak_shaving_recharge_power": {
+        "name": "Peak shaving recharge power"
+      },
+      "peak_shaving_soc_discharge_limit": {
+        "name": "Peak shaving SOC discharge limit"
+      },
+      "peak_shaving_soc_max_limit": {
+        "name": "Peak shaving SOC maximum"
+      },
+      "max_charge_power": {
+        "name": "Manual charge power"
+      },
+      "max_discharge_power": {
+        "name": "Manual discharge power"
+      },
+      "tariff_price_limit": {
+        "name": "Tariff price limit"
+      },
+      "tariff_price_limit_soc_max": {
+        "name": "Tariff SOC maximum"
+      }
+    },
+    "datetime": {
+      "charging_target_soc_datetime": {
+        "name": "Charging target SOC deadline"
+      },
+      "min_charge_quantity_datetime": {
+        "name": "Charging target kWh deadline"
+      }
+    }
+  }
+}
