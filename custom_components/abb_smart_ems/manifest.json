@@ -1,6 +1,9 @@
 {
   "domain": "abb_smart_ems",
   "name": "ABB Smart EMS",
+  "categories": [
+    "energy"
+  ],
   "codeowners": [
     "@toomore1988"
   ],
